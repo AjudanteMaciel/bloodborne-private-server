@@ -1,0 +1,17 @@
+{
+  "shadnet": {
+    "repository": "https://github.com/Wozzardman/shadnet-p2p",
+    "commit": "5a849a192fd4450593c57b10697316ac324c856e",
+    "protobuf_submodule": "5917ee224a7e47383a78acc129628511fe210dff"
+  },
+  "backend": {
+    "repository": "https://github.com/lKaniel/bloodborne-server",
+    "commit": "08e56cd82c5cfafa76200946f3e08d1616108deb",
+    "local_changes": [
+      "bind only requested IPv4 interface",
+      "standard-glyph fallback",
+      "flat ChannelWordSearch response"
+    ]
+  },
+  "fixture_policy": "Captured online names, session IDs and character IDs anonymized; no account credentials or databases included."
+}

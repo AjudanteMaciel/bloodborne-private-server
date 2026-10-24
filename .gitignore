@@ -1,0 +1,23 @@
+# Local downloads, build products and runtime state
+/.sources/
+/build/
+/runtime/
+/.venv/
+__pycache__/
+*.py[cod]
+*.exe
+*.dll
+*.log
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+*.zip
+*.bak
+*.pid
+settings.json
+server-secrets.json
+config.local.json
+host_overrides*.json
+*.pem
+*.key

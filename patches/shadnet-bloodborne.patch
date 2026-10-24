@@ -1,0 +1,492 @@
+diff --git a/src/bloodborne_summon_broker.cpp b/src/bloodborne_summon_broker.cpp
+index a6c13cb..d6df7e8 100644
+--- a/src/bloodborne_summon_broker.cpp
++++ b/src/bloodborne_summon_broker.cpp
+@@ -73,7 +73,28 @@ std::optional<qint64> HostPlacementMap(const QByteArray& placement) {
+     return static_cast<qint64>(packedMap);
+ }
+ 
++bool IsMakeshiftAltarCandidate(const QJsonObject& request, const QJsonObject& sign) {
++    // The helper advertises from the Dream (method 1/type 0 or 5); the dungeon host
++    // searches for ordinary helpers (method 0/type 0). These are complementary.
++    if (Integer(sign, QStringLiteral("SummonMethod"), -1) != 1 ||
++        (Integer(sign, QStringLiteral("SummonType"), -1) != 0 &&
++         Integer(sign, QStringLiteral("SummonType"), -1) != 5) ||
++        Integer(sign, QStringLiteral("AreaId"), -1) != 0x15000000 ||
++        (Integer(request, QStringLiteral("SummonMethod"), -1) != 0 &&
++         Integer(request, QStringLiteral("SummonMethod"), -1) != 1) ||
++        (Integer(request, QStringLiteral("AreaId"), -1) >> 24) != 29) {
++        return false;
++    }
++    for (const QJsonValue& value : request.value(QStringLiteral("SummonTypeList")).toArray()) {
++        if (Integer(value.toObject(), QStringLiteral("SummonType"), -1) == 0) {
++            return true;
++        }
++    }
++    return false;
++}
++
+ bool MatchesSearch(const QJsonObject& request, const QJsonObject& sign, bool anywhereSummons) {
++    const bool altarCandidate = IsMakeshiftAltarCandidate(request, sign);
+     const qint64 requester = Integer(request, QStringLiteral("UserId"), -1);
+     const QString requesterSession = request.value(QStringLiteral("SessionId")).toString();
+     if (Integer(sign, QStringLiteral("UserId"), -1) == requester ||
+@@ -81,10 +102,10 @@ bool MatchesSearch(const QJsonObject& request, const QJsonObject& sign, bool any
+         return false;
+     }
+     if (!SameIfPresent(request, sign, QStringLiteral("SummonDataVersion")) ||
+-        !SameIfPresent(request, sign, QStringLiteral("SummonMethod"))) {
++        (!altarCandidate && !SameIfPresent(request, sign, QStringLiteral("SummonMethod")))) {
+         return false;
+     }
+-    if (!anywhereSummons && (!SameIfPresent(request, sign, QStringLiteral("AreaId")) ||
++    if (!anywhereSummons && !altarCandidate && (!SameIfPresent(request, sign, QStringLiteral("AreaId")) ||
+                              !SameIfPresent(request, sign, QStringLiteral("AreaRegionId")) ||
+                              !SameIfPresent(request, sign, QStringLiteral("ChannelId")))) {
+         return false;
+@@ -97,7 +118,23 @@ bool MatchesSearch(const QJsonObject& request, const QJsonObject& sign, bool any
+             summonTypes.insert(static_cast<int>(Integer(filter, QStringLiteral("SummonType"))));
+         }
+     }
+-    if (!summonTypes.isEmpty() &&
++    // Captured chalice Small Resonant Bell advertisements use type 5 while the
++    // Beckoning Bell searches for type 0, including when both are in one layer.
++    const bool chaliceHelper = summonTypes.contains(0) &&
++        Integer(sign, QStringLiteral("SummonType"), -1) == 5 &&
++        (Integer(request, QStringLiteral("AreaId"), -1) >> 24) == 29 &&
++        (Integer(sign, QStringLiteral("AreaId"), -1) >> 24) == 29;
++    // Retail Small Resonant Bell with Corruption advertises type 5 outside
++    // chalices too (captured in area 34), while the Beckoning Bell requests 0.
++    // Keep the oath flags and opaque SummonData unchanged: the game decides
++    // whether the summoned hunter is an ally or an oath adversary. Invasion
++    // type 2 must not be treated as a cooperative bell.
++    const bool oathHelper = summonTypes.contains(0) &&
++        Integer(sign, QStringLiteral("SummonType"), -1) == 5 &&
++        (Integer(sign, QStringLiteral("NaturalEnemy_Vileblood")) == 1 ||
++         Integer(sign, QStringLiteral("NaturalEnemy_VilebloodHunter")) == 1 ||
++         Integer(sign, QStringLiteral("NaturalEnemy_HunterOfHunter")) == 1);
++    if (!altarCandidate && !chaliceHelper && !oathHelper && !summonTypes.isEmpty() &&
+         !summonTypes.contains(static_cast<int>(Integer(sign, QStringLiteral("SummonType"))))) {
+         return false;
+     }
+@@ -118,7 +155,7 @@ bool MatchesSearch(const QJsonObject& request, const QJsonObject& sign, bool any
+     }
+ 
+     const qint64 distance = Integer(request, QStringLiteral("DistanceThreshold"), -1);
+-    if (!anywhereSummons && distance >= 0 && request.contains(QStringLiteral("PosX")) &&
++    if (!anywhereSummons && !altarCandidate && distance >= 0 && request.contains(QStringLiteral("PosX")) &&
+         request.contains(QStringLiteral("PosY")) && request.contains(QStringLiteral("PosZ"))) {
+         const qint64 deltaX =
+             Integer(request, QStringLiteral("PosX")) - Integer(sign, QStringLiteral("PosX"));
+@@ -272,7 +309,38 @@ bool ShouldSpoofAdvertisementField(const QByteArray& key) {
+            key == "MatchingLevel" || key == "PosX" || key == "PosY" || key == "PosZ";
+ }
+ 
+-std::optional<QString> SummonDataWithAvailableResult(const QJsonObject& advertisement) {
++bool IsNeutralVilebloodCoopSearch(const QJsonObject& advertisement, const QJsonObject& request) {
++    // Opt-in live diagnostic. Role 21 is what Corruption advertises; role 7 is
++    // the captured ordinary helper. Never convert an explicit oath/PvP search.
++    if (qEnvironmentVariableIntValue("SHADNET_BLOODBORNE_NEUTRAL_OATH_COOP") != 1 ||
++        Integer(advertisement, QStringLiteral("SummonType"), -1) != 5 ||
++        Integer(advertisement, QStringLiteral("NaturalEnemy_Vileblood")) != 1 ||
++        Integer(advertisement, QStringLiteral("NaturalEnemy_VilebloodHunter")) != 0 ||
++        Integer(advertisement, QStringLiteral("NaturalEnemy_HunterOfHunter")) != 0 ||
++        Integer(advertisement, QStringLiteral("NaturalEnemy_BloodHunter")) != 0) {
++        return false;
++    }
++    const QJsonArray filters = request.value(QStringLiteral("SummonTypeList")).toArray();
++    if (filters.size() != 1) {
++        return false;
++    }
++    const QJsonObject filter = filters.at(0).toObject();
++    if (Integer(filter, QStringLiteral("SummonType"), -1) != 0 ||
++        Integer(filter, QStringLiteral("NaturalEnemyMatchingType"), -1) != 1) {
++        return false;
++    }
++    for (const char* key : {"NaturalEnemy_Vileblood", "NaturalEnemy_VilebloodHunter",
++                            "NaturalEnemy_HunterOfHunter", "NaturalEnemy_BloodHunter"}) {
++        // Exact captured neutral filter, not an absent/unknown field.
++        if (!filter.contains(QLatin1String(key)) || !filter.value(QLatin1String(key)).isNull()) {
++            return false;
++        }
++    }
++    return true;
++}
++
++std::optional<QString> SummonDataWithAvailableResult(const QJsonObject& advertisement,
++                                                   const QJsonObject& request) {
+     constexpr qsizetype PayloadSize = 0xE0;
+     constexpr qsizetype AvailableResultCountOffset = 0x79;
+     if (Integer(advertisement, QStringLiteral("SummonDataVersion"), -1) != 3) {
+@@ -282,13 +350,25 @@ std::optional<QString> SummonDataWithAvailableResult(const QJsonObject& advertis
+     const QByteArray encoded =
+         advertisement.value(QStringLiteral("SummonData")).toString().toLatin1();
+     QByteArray payload = QByteArray::fromBase64(encoded, QByteArray::AbortOnBase64DecodingErrors);
+-    if (payload.size() != PayloadSize || payload[AvailableResultCountOffset] != 0) {
++    if (payload.size() != PayloadSize) {
+         return std::nullopt;
+     }
+ 
+     // Bloodborne advertises this response-side count as zero. A search result represents one
+     // available candidate; the native manager consumes one while creating its pending record.
+-    payload[AvailableResultCountOffset] = 1;
++    bool changed = false;
++    if (payload[AvailableResultCountOffset] == 0) {
++        payload[AvailableResultCountOffset] = 1;
++        changed = true;
++    }
++    constexpr qsizetype NativeRoleOffset = 0x76;
++    if (payload[NativeRoleOffset] == 21 && IsNeutralVilebloodCoopSearch(advertisement, request)) {
++        payload[NativeRoleOffset] = 7;
++        changed = true;
++    }
++    if (!changed) {
++        return std::nullopt;
++    }
+     return QString::fromLatin1(payload.toBase64());
+ }
+ 
+@@ -300,7 +380,7 @@ QByteArray PrepareAdvertisementForSearch(const QByteArray& rawAdvertisement,
+         return rawAdvertisement;
+     }
+ 
+-    const std::optional<QString> summonData = SummonDataWithAvailableResult(advertisement);
++    const std::optional<QString> summonData = SummonDataWithAvailableResult(advertisement, request);
+     QSet<QByteArray> emitted;
+     QByteArray out;
+     out.append('{');
+diff --git a/src/stun_server.cpp b/src/stun_server.cpp
+index a61d5bd..d383b80 100644
+--- a/src/stun_server.cpp
++++ b/src/stun_server.cpp
+@@ -9,24 +9,32 @@
+ static constexpr uint16_t SIGNALING_VPORT_NBO = 0xFFFF;
+ static constexpr int VPORT_HEADER_SIZE = 4;
+ 
+-static QByteArray FrameSignaling(const QByteArray& payload) {
++static QByteArray FrameSignaling(const QByteArray& payload, bool modernFrame) {
+     QByteArray framed;
+     framed.reserve(VPORT_HEADER_SIZE + payload.size());
++    // shadPS4 0.20 plain signaling: marker 0xFF, valid|datagram 0x83,
++    // then the two big-endian 0xFFFF vports. Reply in the sender's format.
++    if (modernFrame) {
++        framed.append(static_cast<char>(0xFF));
++        framed.append(static_cast<char>(0x83));
++    }
+     framed.append(reinterpret_cast<const char*>(&SIGNALING_VPORT_NBO), 2);
+     framed.append(reinterpret_cast<const char*>(&SIGNALING_VPORT_NBO), 2);
+     framed.append(payload);
+     return framed;
+ }
+ 
+-static QByteArray StripVportHeader(const QByteArray& data) {
+-    if (data.size() < VPORT_HEADER_SIZE)
++static QByteArray StripVportHeader(const QByteArray& data, bool& modernFrame) {
++    modernFrame = data.startsWith(QByteArray::fromHex("ff83"));
++    const int offset = modernFrame ? 2 : 0;
++    if (data.size() < offset + VPORT_HEADER_SIZE)
+         return {};
+     uint16_t src_vp, dst_vp;
+-    memcpy(&src_vp, data.constData(), 2);
+-    memcpy(&dst_vp, data.constData() + 2, 2);
++    memcpy(&src_vp, data.constData() + offset, 2);
++    memcpy(&dst_vp, data.constData() + offset + 2, 2);
+     if (src_vp != SIGNALING_VPORT_NBO || dst_vp != SIGNALING_VPORT_NBO)
+         return {}; // not a signaling packet
+-    return data.mid(VPORT_HEADER_SIZE);
++    return data.mid(offset + VPORT_HEADER_SIZE);
+ }
+ 
+ StunServer::StunServer(SharedState* shared, QObject* parent)
+@@ -56,14 +64,15 @@ void StunServer::OnReadyRead() {
+             continue;
+ 
+         // Strip signaling vport header
+-        QByteArray data = StripVportHeader(raw);
++        bool modernFrame = false;
++        QByteArray data = StripVportHeader(raw, modernFrame);
+         if (data.isEmpty())
+             continue;
+ 
+         uint8_t cmd = static_cast<uint8_t>(data[0]);
+         switch (cmd) {
+         case 0x01:
+-            HandleStunPing(data, sender, senderPort);
++            HandleStunPing(data, sender, senderPort, modernFrame);
+             break;
+         default:
+             break;
+@@ -72,7 +81,7 @@ void StunServer::OnReadyRead() {
+ }
+ 
+ void StunServer::HandleStunPing(const QByteArray& data, const QHostAddress& sender,
+-                                uint16_t senderPort) {
++                                uint16_t senderPort, bool modernFrame) {
+     // cmd(1) + online_id(16) + local_ip(4) = 21 bytes minimum
+     if (data.size() < 21)
+         return;
+@@ -105,5 +114,5 @@ void StunServer::HandleStunPing(const QByteArray& data, const QHostAddress& send
+     QByteArray response;
+     response.append(reinterpret_cast<const char*>(&ipNet), 4);
+     response.append(reinterpret_cast<const char*>(&portNet), 2);
+-    m_socket->writeDatagram(FrameSignaling(response), sender, senderPort);
++    m_socket->writeDatagram(FrameSignaling(response, modernFrame), sender, senderPort);
+ }
+diff --git a/src/stun_server.h b/src/stun_server.h
+index c95a01b..742f130 100644
+--- a/src/stun_server.h
++++ b/src/stun_server.h
+@@ -16,7 +16,8 @@ private slots:
+     void OnReadyRead();
+ 
+ private:
+-    void HandleStunPing(const QByteArray& data, const QHostAddress& sender, uint16_t senderPort);
++    void HandleStunPing(const QByteArray& data, const QHostAddress& sender, uint16_t senderPort,
++                        bool modernFrame);
+ 
+     QUdpSocket* m_socket;
+     SharedState* m_shared;
+diff --git a/tests/test_bloodborne_summon_broker.cpp b/tests/test_bloodborne_summon_broker.cpp
+index 096947d..1864400 100644
+--- a/tests/test_bloodborne_summon_broker.cpp
++++ b/tests/test_bloodborne_summon_broker.cpp
+@@ -3,6 +3,7 @@
+ #include <cstdlib>
+ #include <iostream>
+ 
++#include <QJsonArray>
+ #include <QJsonDocument>
+ #include <QJsonObject>
+ #include <QJsonParseError>
+@@ -61,6 +62,231 @@ int main() {
+   const QByteArray unrelatedSearch =
+       R"({"MessageId":"SummonDataGetListRequest","SessionId":"other-session","UserId":2467,"AreaId":385875968,"AreaRegionId":230100,"ChannelId":0,"MatchingLevel":46,"SummonDataVersion":3,"SummonMethod":0,"SummonTypeList":[{"SummonType":0}],"SummonWord":null,"DistanceThreshold":100,"GetMaxCount":20,"PosX":143,"PosY":-116,"PosZ":-87})";
+ 
++
++  // Regression: real Makeshift Altar helper and chalice host requests.
++  {
++    const QByteArray altarRaw = R"FIXTURE({"AreaId":352321536,"AreaRegionId":210000,"ChannelId":0,"CharaId":10001,"ClientVersion":0,"MatchingLevel":132,"MessageId":"SummonDataCreateRequest","NatType":0,"NaturalEnemy_BloodHunter":0,"NaturalEnemy_HunterOfHunter":0,"NaturalEnemy_Vileblood":1,"NaturalEnemy_VilebloodHunter":0,"PosX":-14,"PosY":-6,"PosZ":-17,"Region":2,"RegionFlag":0,"SessionId":"00000000-0000-4000-8000-000000000001","SummonData":"2KHVAGi+jAEIMxQBIAw9AP/////////////////////wSQIAiIoBAABfBQD4iQUA//////8ZGRkAAGQA82SAP0V4YW1wbGVHdWVzdDEyM0dMrJoDAABAAAAAFegeaMFTB9DAx9GMwVT5ET9QNAMAhAAAAC0AFQMeACUAAkV4YW1wbGVHdWVzdDEyMwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/////AAAAAKN2AAAAAAAA","SummonDataVersion":3,"SummonMethod":1,"SummonType":5,"SummonWord":null,"UnlockedFlagList":[{"UnlockedFlag":259},{"UnlockedFlag":10502529},{"UnlockedFlag":10502529}],"UserId":2})FIXTURE";
++    const QByteArray dungeonRaw = R"FIXTURE({"AreaId":486539264,"AreaRegionId":290300,"ChannelId":126,"CharaId":10002,"ClientVersion":0,"DistanceThreshold":100,"GetMaxCount":20,"MatchingLevel":116,"MessageId":"SummonDataGetListRequest","NatType":0,"PosX":193,"PosY":-60,"PosZ":81,"Region":2,"RegionFlag":0,"SessionId":"00000000-0000-4000-8000-000000000002","SummonDataVersion":3,"SummonMethod":0,"SummonTypeList":[{"GetLimitCount":5,"NaturalEnemyMatchingType":1,"NaturalEnemy_BloodHunter":null,"NaturalEnemy_HunterOfHunter":null,"NaturalEnemy_Vileblood":null,"NaturalEnemy_VilebloodHunter":null,"SummonType":0,"SummonWordMatchingType":0}],"SummonWord":null,"UnlockFlagList":[],"UserId":3})FIXTURE";
++    const QJsonObject altarSign = Parse(altarRaw);
++    const QJsonObject dungeonSearch = Parse(dungeonRaw);
++    Bloodborne::SummonBroker altarBroker(1000);
++    altarBroker.Advertise(altarSign, altarRaw, 100);
++    const auto altarFound = altarBroker.Search(dungeonSearch, 110);
++    CHECK(altarFound.size() == 1);
++    CHECK(Parse(altarFound.front()).value("UserId") == altarSign.value("UserId"));
++    CHECK(Parse(altarFound.front()).value("SessionId") == altarSign.value("SessionId"));
++    CHECK(Parse(altarFound.front()).value("CharaId") == altarSign.value("CharaId"));
++    // The host also polls method 1 for the altar, with no local region/distance.
++    QJsonObject altarSearch = dungeonSearch;
++    altarSearch["SummonMethod"] = 1;
++    altarSearch["AreaRegionId"] = QJsonValue(QJsonValue::Null);
++    altarSearch["DistanceThreshold"] = QJsonValue(QJsonValue::Null);
++    CHECK(altarBroker.Search(altarSearch, 110).size() == 1);
++    // Removing the covenant rune changes the altar helper from type 5 to 0.
++    QJsonObject ordinaryAltar = altarSign;
++    ordinaryAltar["SummonType"] = 0;
++    ordinaryAltar["NaturalEnemy_Vileblood"] = 0;
++    const auto ordinaryRaw = QJsonDocument(ordinaryAltar).toJson(QJsonDocument::Compact);
++    Bloodborne::SummonBroker ordinaryAltarBroker(1000);
++    ordinaryAltarBroker.Advertise(ordinaryAltar, ordinaryRaw, 100);
++    CHECK(ordinaryAltarBroker.Search(dungeonSearch, 110).size() == 1);
++    CHECK(ordinaryAltarBroker.Search(altarSearch, 110).size() == 1);
++    QJsonObject unrelatedMap = dungeonSearch;
++    unrelatedMap["AreaId"] = 385875968;
++    CHECK(ordinaryAltarBroker.Search(unrelatedMap, 110).isEmpty());
++    QJsonObject wrong = dungeonSearch;
++    wrong["SummonWord"] = "different-password";
++    CHECK(altarBroker.Search(wrong, 111).isEmpty());
++    wrong = dungeonSearch; wrong["MatchingLevel"] = 1;
++    CHECK(altarBroker.Search(wrong, 112).isEmpty());
++    wrong = dungeonSearch; wrong["AreaId"] = 385875968;
++    CHECK(altarBroker.Search(wrong, 113).isEmpty());
++    wrong = dungeonSearch; wrong["UserId"] = altarSign.value("UserId");
++    CHECK(altarBroker.Search(wrong, 114).isEmpty());
++    wrong = dungeonSearch; wrong["SummonDataVersion"] = 99;
++    CHECK(altarBroker.Search(wrong, 115).isEmpty());
++    wrong = dungeonSearch; wrong["SummonMethod"] = 2;
++    CHECK(altarBroker.Search(wrong, 116).isEmpty());
++    wrong = dungeonSearch;
++    wrong["SummonTypeList"] = QJsonDocument::fromJson("[{\"SummonType\":1}]").array();
++    CHECK(altarBroker.Search(wrong, 117).isEmpty());
++    QJsonObject passwordSign = altarSign; passwordSign["SummonWord"] = "same-password";
++    Bloodborne::SummonBroker passwordBroker(1000);
++    const auto passwordRaw = QJsonDocument(passwordSign).toJson(QJsonDocument::Compact);
++    passwordBroker.Advertise(passwordSign, passwordRaw, 100);
++    wrong = dungeonSearch; wrong["SummonWord"] = "same-password";
++    CHECK(passwordBroker.Search(wrong, 118).size() == 1);
++    wrong["SummonWord"] = "wrong-password";
++    CHECK(passwordBroker.Search(wrong, 119).isEmpty());
++    const QByteArray altarClaim = QJsonDocument(QJsonObject{
++      {"SessionId", altarSign.value("SessionId")},
++      {"UserId", dungeonSearch.value("UserId")},
++      {"TargetUserId", altarSign.value("UserId")},
++      {"HostData", "dungeon-host-data"}}).toJson(QJsonDocument::Compact);
++    CHECK(altarBroker.Claim(Parse(altarClaim), altarClaim, 120).status ==
++          Bloodborne::SummonBroker::ClaimStatus::Claimed);
++    CHECK(altarBroker.Advertise(altarSign, altarRaw, 130).pendingClaim == altarClaim);
++  }
++
++
++  // Regression from the two real bells in the same chs2c layer.
++  {
++    const QByteArray helperRaw = R"FIX({"AreaId":486539264,"AreaRegionId":290000,"ChannelId":2000000010,"CharaId":10001,"ClientVersion":0,"MatchingLevel":132,"MessageId":"SummonDataCreateRequest","NatType":0,"NaturalEnemy_BloodHunter":0,"NaturalEnemy_HunterOfHunter":0,"NaturalEnemy_Vileblood":1,"NaturalEnemy_VilebloodHunter":0,"PosX":38,"PosY":31,"PosZ":-74,"Region":2,"RegionFlag":0,"SessionId":"00000000-0000-4000-8000-000000000003","SummonData":"2KHVAGi+jAEIMxQBIAw9AP////////////////////9AnAAAiIoBAABfBQD4iQUA//////8ZGRkAAGQA82SAP0V4YW1wbGVHdWVzdDEyM7pMrJoUAADAAAAAHdH/GkLv//tB5NiUwigYGkDQbAQAhAAAAC0AFQEeACUAAkV4YW1wbGVHdWVzdDEyMwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAD/////EAAAAKN2AAAAAAAA","SummonDataVersion":3,"SummonMethod":0,"SummonType":5,"SummonWord":null,"UnlockedFlagList":[{"UnlockedFlag":0},{"UnlockedFlag":0},{"UnlockedFlag":0}],"UserId":2})FIX";
++    const QByteArray hostRaw = R"FIX({"AreaId":486539264,"AreaRegionId":290000,"ChannelId":2000000010,"CharaId":10002,"ClientVersion":0,"DistanceThreshold":100,"GetMaxCount":20,"MatchingLevel":116,"MessageId":"SummonDataGetListRequest","NatType":0,"PosX":38,"PosY":31,"PosZ":-90,"Region":2,"RegionFlag":0,"SessionId":"00000000-0000-4000-8000-000000000004","SummonDataVersion":3,"SummonMethod":0,"SummonTypeList":[{"GetLimitCount":5,"NaturalEnemyMatchingType":1,"NaturalEnemy_BloodHunter":null,"NaturalEnemy_HunterOfHunter":null,"NaturalEnemy_Vileblood":null,"NaturalEnemy_VilebloodHunter":null,"SummonType":0,"SummonWordMatchingType":0}],"SummonWord":null,"UnlockFlagList":[],"UserId":3})FIX";
++    Bloodborne::SummonBroker sameLayer(1000);
++    sameLayer.Advertise(Parse(helperRaw), helperRaw, 100);
++    CHECK(sameLayer.Search(Parse(hostRaw), 110).size() == 1);
++    QJsonObject wrong = Parse(hostRaw); wrong["ChannelId"] = 126;
++    CHECK(sameLayer.Search(wrong, 111).isEmpty());
++    wrong = Parse(hostRaw); wrong["AreaRegionId"] = 290100;
++    CHECK(sameLayer.Search(wrong, 112).isEmpty());
++    wrong = Parse(hostRaw); wrong["PosX"] = 10000;
++    CHECK(sameLayer.Search(wrong, 113).isEmpty());
++    wrong = Parse(hostRaw); wrong["SummonTypeList"] = QJsonDocument::fromJson("[{\"SummonType\":1}]").array();
++    CHECK(sameLayer.Search(wrong, 114).isEmpty());
++    wrong = Parse(hostRaw); wrong["SummonWord"] = "other";
++    CHECK(sameLayer.Search(wrong, 115).isEmpty());
++  }
++
++  // Oath bells in the main game: Corruption helper, Impurity host.
++  // Type 5 is not restricted to chalices. Preserve the oath data so the
++  // retail client, rather than the broker, assigns ally/adversary status.
++  {
++    QJsonObject oathSign = Parse(advertisement);
++    oathSign["AreaId"] = 570425344;
++    oathSign["AreaRegionId"] = 340150;
++    oathSign["SummonType"] = 5;
++    oathSign["NaturalEnemy_Vileblood"] = 1;
++    oathSign["NaturalEnemy_VilebloodHunter"] = 0;
++    oathSign["NaturalEnemy_HunterOfHunter"] = 0;
++    oathSign["NaturalEnemy_BloodHunter"] = 0;
++    QJsonObject oathSearch = Parse(search);
++    oathSearch["AreaId"] = oathSign["AreaId"];
++    oathSearch["AreaRegionId"] = oathSign["AreaRegionId"];
++    const auto oathRaw = QJsonDocument(oathSign).toJson(QJsonDocument::Compact);
++    Bloodborne::SummonBroker oathBroker(1000);
++    oathBroker.Advertise(oathSign, oathRaw, 100);
++    const auto oathFound = oathBroker.Search(oathSearch, 110);
++    CHECK(oathFound.size() == 1);
++    CHECK(oathFound.front() == oathRaw);
++    CHECK(Parse(oathFound.front())["NaturalEnemy_Vileblood"] == 1);
++    CHECK(Parse(oathFound.front())["SummonType"] == 5);
++    // The actual live pair is across a zone boundary (340150 / 340160).
++    // This change must not bypass it, nor area, channel, method or distance.
++    QJsonObject wrong = oathSearch; wrong["AreaRegionId"] = 340160;
++    CHECK(oathBroker.Search(wrong, 111).isEmpty());
++    wrong = oathSearch; wrong["AreaId"] = 385875968;
++    CHECK(oathBroker.Search(wrong, 111).isEmpty());
++    wrong = oathSearch; wrong["ChannelId"] = 99;
++    CHECK(oathBroker.Search(wrong, 111).isEmpty());
++    wrong = oathSearch; wrong["SummonMethod"] = 1;
++    CHECK(oathBroker.Search(wrong, 111).isEmpty());
++    wrong = oathSearch; wrong["PosX"] = 10000;
++    CHECK(oathBroker.Search(wrong, 111).isEmpty());
++    wrong = oathSearch; wrong["SummonDataVersion"] = 99;
++    CHECK(oathBroker.Search(wrong, 111).isEmpty());
++    wrong = oathSearch; wrong["MatchingLevel"] = 1;
++    CHECK(oathBroker.Search(wrong, 111).isEmpty());
++    wrong = oathSearch; wrong["SummonWord"] = "different";
++    CHECK(oathBroker.Search(wrong, 111).isEmpty());
++    wrong = oathSearch; wrong["SummonTypeList"] = QJsonArray{QJsonObject{{"SummonType", 2}}};
++    CHECK(oathBroker.Search(wrong, 111).isEmpty());
++    // Both other oath flags also retain their exact retail data. Actual
++    // PvP hostility is client-owned and is not asserted by this unit test.
++    for (const char* flag : {"NaturalEnemy_VilebloodHunter", "NaturalEnemy_HunterOfHunter"}) {
++      QJsonObject other = oathSign;
++      other["NaturalEnemy_Vileblood"] = 0;
++      other[flag] = 1;
++      const auto raw = QJsonDocument(other).toJson(QJsonDocument::Compact);
++      Bloodborne::SummonBroker otherBroker(1000);
++      otherBroker.Advertise(other, raw, 100);
++      CHECK(otherBroker.Search(oathSearch, 110).size() == 1);
++      CHECK(otherBroker.Search(oathSearch, 110).front() == raw);
++    }
++    for (int type : {2, 5}) {
++      QJsonObject nonOath = oathSign;
++      nonOath["SummonType"] = type;
++      nonOath["NaturalEnemy_Vileblood"] = 0;
++      const auto raw = QJsonDocument(nonOath).toJson(QJsonDocument::Compact);
++      Bloodborne::SummonBroker nonOathBroker(1000);
++      nonOathBroker.Advertise(nonOath, raw, 100);
++      CHECK(nonOathBroker.Search(oathSearch, 110).isEmpty());
++    }
++  }
++
++  // Opt-in response-role diagnostic: change only role/count in an exact
++  // neutral cooperative search, never stored data or an oath/PvP filter.
++  {
++    const QByteArray previous = qgetenv("SHADNET_BLOODBORNE_NEUTRAL_OATH_COOP");
++    qputenv("SHADNET_BLOODBORNE_NEUTRAL_OATH_COOP", "1");
++    QJsonObject sign = Parse(advertisement);
++    sign["SummonType"] = 5;
++    sign["NaturalEnemy_Vileblood"] = 1;
++    sign["NaturalEnemy_VilebloodHunter"] = 0;
++    sign["NaturalEnemy_HunterOfHunter"] = 0;
++    sign["NaturalEnemy_BloodHunter"] = 0;
++    QByteArray original(224, 'q');
++    original[0x76] = 21;
++    original[0x79] = 0;
++    sign["SummonData"] = QString::fromLatin1(original.toBase64());
++    QJsonObject request = Parse(search);
++    QJsonObject neutral{{"SummonType", 0}, {"NaturalEnemyMatchingType", 1},
++      {"NaturalEnemy_Vileblood", QJsonValue::Null},
++      {"NaturalEnemy_VilebloodHunter", QJsonValue::Null},
++      {"NaturalEnemy_HunterOfHunter", QJsonValue::Null},
++      {"NaturalEnemy_BloodHunter", QJsonValue::Null}};
++    request["SummonTypeList"] = QJsonArray{neutral};
++    Bloodborne::SummonBroker roleBroker(1000);
++    const auto raw = QJsonDocument(sign).toJson(QJsonDocument::Compact);
++    roleBroker.Advertise(sign, raw, 100);
++    auto found = roleBroker.Search(request, 110);
++    CHECK(found.size() == 1);
++    auto payload = [&](const QByteArray& result) {
++      return QByteArray::fromBase64(Parse(result)["SummonData"].toString().toLatin1());
++    };
++    QByteArray expected = original; expected[0x76] = 7; expected[0x79] = 1;
++    CHECK(payload(found.front()) == expected);
++    CHECK(Parse(found.front())["NaturalEnemy_Vileblood"] == 1);
++    CHECK(Parse(found.front())["SummonType"] == 5);
++    CHECK(sign["SummonData"].toString().toLatin1() == original.toBase64());
++    // Opt-out remains the prior behavior and the stored role remains 21.
++    qputenv("SHADNET_BLOODBORNE_NEUTRAL_OATH_COOP", "0");
++    expected[0x76] = 21;
++    CHECK(payload(roleBroker.Search(request, 111).front()) == expected);
++    qputenv("SHADNET_BLOODBORNE_NEUTRAL_OATH_COOP", "1");
++    QJsonObject enemy = neutral; enemy["SummonType"] = 5;
++    request["SummonTypeList"] = QJsonArray{enemy};
++    CHECK(payload(roleBroker.Search(request, 111).front()) == expected);
++    request["SummonTypeList"] = QJsonArray{neutral, enemy};
++    CHECK(payload(roleBroker.Search(request, 111).front()) == expected);
++    enemy = neutral; enemy["NaturalEnemy_VilebloodHunter"] = 1;
++    request["SummonTypeList"] = QJsonArray{enemy};
++    CHECK(payload(roleBroker.Search(request, 111).front()) == expected);
++    enemy = neutral; enemy["NaturalEnemyMatchingType"] = 0;
++    request["SummonTypeList"] = QJsonArray{enemy};
++    CHECK(payload(roleBroker.Search(request, 111).front()) == expected);
++    enemy = neutral; enemy.remove("NaturalEnemy_BloodHunter");
++    request["SummonTypeList"] = QJsonArray{enemy};
++    CHECK(payload(roleBroker.Search(request, 111).front()) == expected);
++    // A nonzero availability count is retained during role conversion.
++    original[0x79] = 3;
++    sign["SummonData"] = QString::fromLatin1(original.toBase64());
++    roleBroker.Advertise(sign, QJsonDocument(sign).toJson(QJsonDocument::Compact), 120);
++    request["SummonTypeList"] = QJsonArray{neutral};
++    expected = original; expected[0x76] = 7;
++    CHECK(payload(roleBroker.Search(request, 121).front()) == expected);
++    // Unknown versions and native roles are not converted.
++    sign["SummonDataVersion"] = request["SummonDataVersion"] = 4;
++    roleBroker.Advertise(sign, QJsonDocument(sign).toJson(QJsonDocument::Compact), 130);
++    CHECK(payload(roleBroker.Search(request, 131).front()) == original);
++    sign["SummonDataVersion"] = request["SummonDataVersion"] = 3;
++    original[0x76] = 24;
++    sign["SummonData"] = QString::fromLatin1(original.toBase64());
++    roleBroker.Advertise(sign, QJsonDocument(sign).toJson(QJsonDocument::Compact), 140);
++    CHECK(payload(roleBroker.Search(request, 141).front()) == original);
++    qputenv("SHADNET_BLOODBORNE_NEUTRAL_OATH_COOP", previous);
++  }
++
+   Bloodborne::SummonBroker broker(1'000);
+   auto advertised = broker.Advertise(Parse(advertisement), advertisement, 100);
+   CHECK(advertised.state == Bloodborne::SummonBroker::State::Advertised);

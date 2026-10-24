@@ -1,0 +1,6 @@
+cmake_minimum_required(VERSION 3.16)
+project(bloodborne_private_server LANGUAGES CXX)
+include(CTest)
+set(SHADNET_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/.sources/shadnet" CACHE PATH "Patched shadNet source")
+add_subdirectory("${SHADNET_SOURCE_DIR}" upstream)
+add_subdirectory("${SHADNET_SOURCE_DIR}/clientsample" account)
