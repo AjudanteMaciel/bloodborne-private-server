@@ -11,11 +11,12 @@ This project does not include Bloodborne game files, port executables, saves, re
 Manually tested by two players on Windows over Tailscale on October 24, 2026:
 
 - Co-op within the same Chalice Dungeon and layer.
+- Co-op Quick Search at the Makeshift Altar, including a successful test with players on different layers.
 - Co-op in the main world, including Corruption and Impurity oath runes.
 - Players reported a successful Chalice PvP test using the Sinister Bell with different oath runes.
 - Standard dungeon glyph lookup was fixed and confirmed in the game client.
 
-Isolated network tests do not replace testing in the game. Makeshift Altar summoning, every oath combination, every game region, and PvP triggered exclusively by Corruption versus Radiance have not received complete manual validation. One successful duel does not establish that every PvP filter reproduces the original servers' behavior.
+Isolated network tests do not replace testing in the game. Every oath combination, every game region, and PvP triggered exclusively by Corruption versus Radiance have not received complete manual validation. One successful duel does not establish that every PvP filter reproduces the original servers' behavior.
 
 ## Components and ports
 
@@ -116,7 +117,7 @@ The private profile selects **shadNet**, configures the three server endpoints, 
 
 ## Bells and oath runes
 
-For co-op, one player rings the Beckoning Bell and the other rings the Small Resonant Bell, in the same matchmaking zone and with the same password. Chalice players must also use the same dungeon and layer. Matchmaking does not bypass these restrictions.
+For co-op, one player rings the Beckoning Bell and the other rings the Small Resonant Bell, in the same matchmaking zone and with the same password. For direct bell matching in Chalice Dungeons, use the same dungeon and layer. Alternatively, the helper can select **Co-op Quick Search** at the **Makeshift Altar** while the host rings the Beckoning Bell inside the dungeon. This altar method was confirmed to work with players on different layers.
 
 Corruption + Impurity was validated for co-op. The Corruption client advertises category 5 while the host searches for category 0. The patch allows that match and converts internal role 21 to role 7 in the response sent to an exact neutral co-op search. The startup script enables this behavior with `SHADNET_BLOODBORNE_NEUTRAL_OATH_COOP=1`. The stored advertisement is unchanged; explicit adversary searches, unknown versions, and other roles are excluded from this conversion.
 
@@ -188,7 +189,7 @@ The NPID field takes the private account name, not an email address or a Discord
    ```
 
 4. The profile script configures the server fields and active routing files. It preserves the NPID and password entered in step 2; it does **not** register accounts or supply credentials for you.
-5. Start the game and select **Play Online**. Use game version **1.09** on both PCs. For co-op, set the same in-game matching password, stand in the same matchmaking zone, and ring the appropriate bells. In Chalice Dungeons, also use the same dungeon and layer.
+5. Start the game and select **Play Online**. Use game version **1.09** on both PCs. For co-op, set the same in-game matching password, stand in the same matchmaking zone, and ring the appropriate bells. For direct bell matching in Chalice Dungeons, also use the same dungeon and layer. For the tested Makeshift Altar method, the host rings the Beckoning Bell inside the dungeon and the helper selects **Co-op Quick Search** at the altar; this worked with players on different layers.
 
 If login fails, first check that the selected service is shadNet, the NPID and password belong to this private server, Tailscale is connected, and both server processes are running. If login succeeds but messages or bells still use another server, close both the game and launcher and reapply the private profile to refresh the override files.
 
