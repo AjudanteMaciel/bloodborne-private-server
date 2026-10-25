@@ -3,6 +3,7 @@ param(
     [Parameter(Mandatory)][ValidateSet('Public','Private')][string]$Mode,
     [Parameter(Mandatory)][string]$InstallDir,
     [System.Net.IPAddress]$ServerAddress,
+    [System.Management.Automation.PSCredential]$PrivateCredential,
     [switch]$OpenLauncher
 )
 $ErrorActionPreference = 'Stop'
@@ -37,6 +38,10 @@ try {
         Set-Preference 'extra_env' ((@(([string]$settings.extra_env -split '\s+') | Where-Object { $_ -and $_ -notmatch "^($routes)=" })) -join ' ')
     }
     if ($Mode -eq 'Private') {
+        if ($PrivateCredential) {
+            Set-Preference 'online_npid' $PrivateCredential.UserName
+            Set-Preference 'online_password' $PrivateCredential.GetNetworkCredential().Password
+        }
         $ip = $ServerAddress.ToString()
         $base = "http://${ip}:31316"
         Set-Preference 'online_pool' 'shadnet'
@@ -83,5 +88,5 @@ try {
     }
     throw $failure
 }
-Write-Host "$Mode profile selected. Accounts, saves, and trophies were preserved."
+Write-Host "$Mode profile selected. Saves, trophies, and Discord login were preserved."
 if ($OpenLauncher) { Start-Process -FilePath $launcher -WorkingDirectory $install -WindowStyle Hidden }

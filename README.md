@@ -108,6 +108,21 @@ The registration key is stored in the local `runtime/shadnet.cfg`. Supply your o
 
 Close the game and launcher before switching. The configured user/save directory is preserved, including custom paths inherited from shadPS4.
 
+For the simplest setup, double-click one of these files on each gaming PC:
+
+- **`Online private.bat`** asks for the port folder, private server Tailscale IPv4, and your registered private NPID/password on first use. Later clicks restore those credentials, select the private services, and open the launcher.
+- **`Online The Hunters Dream.bat`** selects the public service and opens the launcher. Your saved Discord login is preserved; sign in through Discord in the launcher if the session has expired. It only asks for the port folder if it has not been saved yet.
+
+These shortcuts do not start the server or Tailscale. The server owner must start both separately. Accounts must already exist on the private server; the shortcut does not register them.
+
+Your choices are saved to `client.local.json`, which Git ignores. Its private password is encrypted using Windows DPAPI for the current Windows user and PC. Do not share this file; each player should complete setup on their own PC. The launcher still stores its password using its normal settings format. No backup files accumulate. To change the saved folder, server, or private account, run:
+
+```powershell
+.\scripts\Open-Online.ps1 -Mode Private -Configure
+```
+
+For command-line use without the saved shortcut settings:
+
 ```powershell
 .\scripts\Set-OnlineProfile.ps1 -Mode Private -InstallDir 'C:\Games\bbport-windows' -ServerAddress 100.101.102.103 -OpenLauncher
 .\scripts\Set-OnlineProfile.ps1 -Mode Public -InstallDir 'C:\Games\bbport-windows' -OpenLauncher
@@ -128,6 +143,7 @@ For ordinary invasions, use the Sinister Resonant Bell. A Bell-ringing Woman mus
 ```powershell
 python -m unittest discover -s backend/tests -v
 .\tests\Test-OnlineProfile.ps1
+.\tests\Test-OnlineShortcuts.ps1
 .\tests\Test-ServerControl.ps1
 .\tests\Test-PrepareSources.ps1
 ctest --test-dir build --output-on-failure

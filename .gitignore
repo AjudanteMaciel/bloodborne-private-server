@@ -18,6 +18,7 @@ __pycache__/
 settings.json
 server-secrets.json
 config.local.json
+client.local.json
 host_overrides*.json
 *.pem
 *.key
